@@ -52,6 +52,7 @@ export interface TranslateOptions {
   temperature?: number;
   timeoutMs?: number;
   onWarning?: (warning: string) => void;
+  onProgress?: (message: string) => void;
 }
 
 export interface HttpRequestParams {
@@ -78,4 +79,5 @@ export interface LlmProviderConfig {
   temperature?: number;
   timeoutMs?: number;
   maxRetries?: number;
+  onDebug?: (message: string) => void;
 }

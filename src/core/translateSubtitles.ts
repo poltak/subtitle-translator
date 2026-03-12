@@ -1,4 +1,10 @@
-import type { LlmAdapter, SubtitleDoc, SubtitleItem, TranslateOptions } from "../types.js";
+import type {
+  LlmAdapter,
+  SubtitleDoc,
+  SubtitleItem,
+  TranslateBatchItem,
+  TranslateOptions,
+} from "../types.js";
 import { buildTranslateBatches } from "./batching.js";
 import { normalizeSubtitleDoc } from "./normalize.js";
 import { reflowText } from "./reflow.js";
@@ -17,13 +23,13 @@ export interface TranslateSubtitlesResult {
 const DEFAULTS = {
   sourceLang: "en",
   targetLang: "vi",
-  batchSize: 40,
+  batchSize: 2,
   maxCharsPerLine: 42,
   maxLines: 2,
   preserveLineBreaks: false,
   contextWindow: 1,
   temperature: 0,
-  timeoutMs: 120000,
+  timeoutMs: 300000,
 } as const;
 
 export async function translateSubtitles(params: TranslateSubtitlesParams): Promise<TranslateSubtitlesResult> {
@@ -39,18 +45,31 @@ export async function translateSubtitles(params: TranslateSubtitlesParams): Prom
   const translatedByIndex: Record<number, string> = {};
   const warnings: string[] = [];
 
-  for (const batch of batches) {
-    const result = await params.llmAdapter.translateBatch({
+  const totalBatches = batches.length;
+  for (let i = 0; i < batches.length; i += 1) {
+    const batch = batches[i];
+    const batchStart = Date.now();
+    options.onProgress?.(
+      `Batch ${i + 1}/${totalBatches}: translating subtitle indices ${batch[0]?.id}..${batch[batch.length - 1]?.id} (${batch.length} items)`,
+    );
+
+    const resilient = await translateBatchResilient({
+      llmAdapter: params.llmAdapter,
+      batch,
       sourceLang: options.sourceLang,
       targetLang: options.targetLang,
-      items: batch,
       model: options.model,
       temperature: options.temperature,
       timeoutMs: options.timeoutMs,
+      onProgress: options.onProgress,
+      onWarning: options.onWarning,
     });
+    const elapsedMs = Date.now() - batchStart;
+    options.onProgress?.(`Batch ${i + 1}/${totalBatches} completed in ${(elapsedMs / 1000).toFixed(1)}s`);
+    warnings.push(...resilient.warnings);
 
     for (const item of batch) {
-      const translated = result.translatedById[item.id];
+      const translated = resilient.translatedById[item.id];
       if (!translated || !translated.trim()) {
         const warning = `Missing translation for subtitle index ${item.id}; preserving source text.`;
         warnings.push(warning);
@@ -73,6 +92,77 @@ export async function translateSubtitles(params: TranslateSubtitlesParams): Prom
     },
     warnings,
   };
+}
+
+interface ResilientBatchParams {
+  llmAdapter: LlmAdapter;
+  batch: TranslateBatchItem[];
+  sourceLang: string;
+  targetLang: string;
+  model?: string;
+  temperature?: number;
+  timeoutMs?: number;
+  onProgress?: (message: string) => void;
+  onWarning?: (warning: string) => void;
+}
+
+async function translateBatchResilient(params: ResilientBatchParams): Promise<{
+  translatedById: Record<string, string>;
+  warnings: string[];
+}> {
+  try {
+    const result = await params.llmAdapter.translateBatch({
+      sourceLang: params.sourceLang,
+      targetLang: params.targetLang,
+      items: params.batch,
+      model: params.model,
+      temperature: params.temperature,
+      timeoutMs: params.timeoutMs,
+    });
+    return { translatedById: result.translatedById, warnings: [] };
+  } catch (error) {
+    if (params.batch.length === 1) {
+      const single = params.batch[0];
+      const warning =
+        `Translation failed for subtitle index ${single.id}; preserving source text. Cause: ${formatError({ error })}`;
+      params.onWarning?.(warning);
+      return {
+        translatedById: { [single.id]: single.text },
+        warnings: [warning],
+      };
+    }
+
+    const mid = Math.ceil(params.batch.length / 2);
+    const left = params.batch.slice(0, mid);
+    const right = params.batch.slice(mid);
+    params.onProgress?.(
+      `Batch fallback: split ${params.batch.length} items into ${left.length}+${right.length} after error: ${formatError({ error })}`,
+    );
+
+    const leftResult = await translateBatchResilient({
+      ...params,
+      batch: left,
+    });
+    const rightResult = await translateBatchResilient({
+      ...params,
+      batch: right,
+    });
+
+    return {
+      translatedById: {
+        ...leftResult.translatedById,
+        ...rightResult.translatedById,
+      },
+      warnings: [...leftResult.warnings, ...rightResult.warnings],
+    };
+  }
+}
+
+function formatError(params: { error: unknown }): string {
+  if (params.error instanceof Error) {
+    return `${params.error.name}: ${params.error.message}`;
+  }
+  return String(params.error);
 }
 
 function translateItem(params: {

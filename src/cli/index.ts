@@ -17,6 +17,13 @@ interface CliArgs {
   model?: string;
   format?: SubtitleFormat;
   baseUrl?: string;
+  batchSize?: number;
+  timeoutMs?: number;
+  maxRetries?: number;
+  contextWindow?: number;
+  maxCharsPerLine?: number;
+  maxLines?: number;
+  verbose?: boolean;
   help?: boolean;
 }
 
@@ -43,8 +50,9 @@ async function main(): Promise<void> {
       model: args.model ?? "qwen3.5:9b",
       baseUrl: args.baseUrl ?? "http://127.0.0.1:11434",
       temperature: 0,
-      timeoutMs: 120000,
-      maxRetries: 2,
+      timeoutMs: args.timeoutMs ?? 300000,
+      maxRetries: args.maxRetries ?? 2,
+      onDebug: args.verbose ? (message) => stderr.write(`[debug] ${message}\n`) : undefined,
     },
   });
 
@@ -59,6 +67,12 @@ async function main(): Promise<void> {
       targetLang: args.to ?? "vi",
       model: args.model ?? "qwen3.5:9b",
       temperature: 0,
+      timeoutMs: args.timeoutMs ?? 300000,
+      batchSize: args.batchSize ?? 2,
+      contextWindow: args.contextWindow ?? 1,
+      maxCharsPerLine: args.maxCharsPerLine ?? 42,
+      maxLines: args.maxLines ?? 2,
+      onProgress: args.verbose ? (message) => stderr.write(`[progress] ${message}\n`) : undefined,
     },
   });
 
@@ -95,38 +109,60 @@ function parseArgs(params: { argv: string[] }): CliArgs {
       continue;
     }
 
-    const value = argv[i + 1];
-    if (value === undefined) {
-      throw new Error(`Missing value for ${token}`);
-    }
-
     switch (token) {
+      case "--verbose":
+        args.verbose = true;
+        break;
       case "--in":
-        args.input = value;
+        args.input = requireValue({ argv, index: i, token });
         i += 1;
         break;
       case "--out":
-        args.output = value;
+        args.output = requireValue({ argv, index: i, token });
         i += 1;
         break;
       case "--from":
-        args.from = value;
+        args.from = requireValue({ argv, index: i, token });
         i += 1;
         break;
       case "--to":
-        args.to = value;
+        args.to = requireValue({ argv, index: i, token });
         i += 1;
         break;
       case "--model":
-        args.model = value;
+        args.model = requireValue({ argv, index: i, token });
         i += 1;
         break;
       case "--format":
-        args.format = parseFormat({ value });
+        args.format = parseFormat({ value: requireValue({ argv, index: i, token }) });
         i += 1;
         break;
       case "--base-url":
-        args.baseUrl = value;
+        args.baseUrl = requireValue({ argv, index: i, token });
+        i += 1;
+        break;
+      case "--batch-size":
+        args.batchSize = parsePositiveInt({ value: requireValue({ argv, index: i, token }), token });
+        i += 1;
+        break;
+      case "--timeout-ms":
+        args.timeoutMs = parsePositiveInt({ value: requireValue({ argv, index: i, token }), token });
+        i += 1;
+        break;
+      case "--max-retries":
+        args.maxRetries = parseNonNegativeInt({ value: requireValue({ argv, index: i, token }), token });
+        i += 1;
+        break;
+      case "--context-window":
+        args.contextWindow = parseNonNegativeInt({ value: requireValue({ argv, index: i, token }), token });
+        i += 1;
+        break;
+      case "--max-chars-per-line":
+        args.maxCharsPerLine = parsePositiveInt({ value: requireValue({ argv, index: i, token }), token });
+        i += 1;
+        break;
+      case "--max-lines":
+        args.maxLines = parsePositiveInt({ value: requireValue({ argv, index: i, token }), token });
         i += 1;
         break;
       default:
@@ -142,6 +178,30 @@ function parseFormat(params: { value: string }): SubtitleFormat {
     return params.value;
   }
   throw new Error(`Invalid --format value: ${params.value}`);
+}
+
+function requireValue(params: { argv: string[]; index: number; token: string }): string {
+  const value = params.argv[params.index + 1];
+  if (value === undefined) {
+    throw new Error(`Missing value for ${params.token}`);
+  }
+  return value;
+}
+
+function parsePositiveInt(params: { value: string; token: string }): number {
+  const parsed = Number(params.value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${params.token}: expected positive integer, got "${params.value}"`);
+  }
+  return parsed;
+}
+
+function parseNonNegativeInt(params: { value: string; token: string }): number {
+  const parsed = Number(params.value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Invalid ${params.token}: expected non-negative integer, got "${params.value}"`);
+  }
+  return parsed;
 }
 
 function suggestOutputPath(params: { inputSource: string; format: SubtitleFormat }): string {
@@ -179,11 +239,32 @@ Options:
   --model <modelId>    Ollama model (default: qwen3.5:9b)
   --format <srt|vtt|json>  Explicit input/output format
   --base-url <url>     Ollama base URL (default: http://127.0.0.1:11434)
+  --batch-size <n>     Batch size per LLM call (default: 2)
+  --timeout-ms <ms>    Request timeout per batch (default: 300000)
+  --max-retries <n>    Retries per batch request (default: 2)
+  --context-window <n> Context items on each side (default: 1)
+  --max-chars-per-line <n>  Line reflow character limit (default: 42)
+  --max-lines <n>      Max lines per subtitle block (default: 2)
+  --verbose            Print progress/debug logs to stderr
   --help               Show this help
 `);
 }
 
 main().catch((error: unknown) => {
-  stderr.write(`${String(error)}\n`);
+  stderr.write(`${formatCliError({ error })}\n`);
   process.exitCode = 1;
 });
+
+function formatCliError(params: { error: unknown }): string {
+  const asText = params.error instanceof Error ? `${params.error.name}: ${params.error.message}` : String(params.error);
+  const lower = asText.toLowerCase();
+  if (lower.includes("aborterror") || lower.includes("operation was aborted")) {
+    return [
+      `Error: ${asText}`,
+      "Hint: request timed out while waiting for Ollama.",
+      "Try: increase --timeout-ms (e.g. 900000), reduce --batch-size (e.g. 3-8), and use --verbose for progress logs.",
+      "Also verify Ollama is responsive: curl http://127.0.0.1:11434/api/tags",
+    ].join("\n");
+  }
+  return `Error: ${asText}`;
+}

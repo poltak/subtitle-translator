@@ -26,6 +26,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test test/*.test.mjs",
+    "translate": "bash ./scripts/translate.sh",
     "quick-test": "npm run build && node dist/cli/index.js fixtures/sample.en.srt --to vi --out fixtures/sample.vi.srt --model qwen3.5:9b --base-url http://127.0.0.1:11434",
     "quick-test:stdout": "npm run build && node dist/cli/index.js fixtures/sample.en.srt --to vi --out - --model qwen3.5:9b --base-url http://127.0.0.1:11434"
   },

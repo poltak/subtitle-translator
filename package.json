@@ -1,0 +1,39 @@
+{
+  "name": "subtitle-translate",
+  "version": "0.1.0",
+  "description": "Browser-first subtitle translation package with Ollama adapter and Node CLI",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "subtitle-translate": "./dist/cli/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
+    "./cli": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "quick-test": "npm run build && node dist/cli/index.js fixtures/sample.en.srt --to vi --out fixtures/sample.vi.srt --model qwen3.5:9b --base-url http://127.0.0.1:11434",
+    "quick-test:stdout": "npm run build && node dist/cli/index.js fixtures/sample.en.srt --to vi --out - --model qwen3.5:9b --base-url http://127.0.0.1:11434"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

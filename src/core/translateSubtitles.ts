@@ -42,7 +42,9 @@ export async function translateSubtitles(params: TranslateSubtitlesParams): Prom
     contextWindow: options.contextWindow,
   });
 
-  const translatedByIndex: Record<number, string> = {};
+  const translatedByIndex: Record<number, string> = {
+    ...(params.options?.initialTranslatedByIndex ?? {}),
+  };
   const warnings: string[] = [];
 
   const totalBatches = batches.length;
@@ -53,9 +55,20 @@ export async function translateSubtitles(params: TranslateSubtitlesParams): Prom
       `Batch ${i + 1}/${totalBatches}: translating subtitle indices ${batch[0]?.id}..${batch[batch.length - 1]?.id} (${batch.length} items)`,
     );
 
+    const pendingBatch = batch.filter((item) => translatedByIndex[Number(item.id)] === undefined);
+    if (pendingBatch.length === 0) {
+      options.onProgress?.(`Batch ${i + 1}/${totalBatches} skipped (already present in checkpoint)`);
+      await options.onBatchCommitted?.({
+        translatedByIndex: { ...translatedByIndex },
+        completedBatches: i + 1,
+        totalBatches,
+      });
+      continue;
+    }
+
     const resilient = await translateBatchResilient({
       llmAdapter: params.llmAdapter,
-      batch,
+      batch: pendingBatch,
       sourceLang: options.sourceLang,
       targetLang: options.targetLang,
       model: options.model,
@@ -68,7 +81,7 @@ export async function translateSubtitles(params: TranslateSubtitlesParams): Prom
     options.onProgress?.(`Batch ${i + 1}/${totalBatches} completed in ${(elapsedMs / 1000).toFixed(1)}s`);
     warnings.push(...resilient.warnings);
 
-    for (const item of batch) {
+    for (const item of pendingBatch) {
       const translated = resilient.translatedById[item.id];
       if (!translated || !translated.trim()) {
         const warning = `Missing translation for subtitle index ${item.id}; preserving source text.`;
@@ -79,6 +92,12 @@ export async function translateSubtitles(params: TranslateSubtitlesParams): Prom
       }
       translatedByIndex[Number(item.id)] = translated.trim();
     }
+
+    await options.onBatchCommitted?.({
+      translatedByIndex: { ...translatedByIndex },
+      completedBatches: i + 1,
+      totalBatches,
+    });
   }
 
   const items = normalized.items.map((item) => translateItem({ item, translatedByIndex, options }));

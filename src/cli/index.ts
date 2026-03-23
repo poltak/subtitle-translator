@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, extname } from "node:path";
 import { stdin as input, stdout as output, stderr } from "node:process";
 import { createOllamaAdapter } from "../adapters/llm/ollama.js";
-import { translateSubtitleText } from "../core/translateText.js";
-import type { SubtitleFormat } from "../types.js";
+import { detectFormat, parseSubtitle, serializeSubtitle } from "../core/format.js";
+import { translateSubtitles } from "../core/translateSubtitles.js";
+import type { SubtitleDoc, SubtitleFormat } from "../types.js";
 import { writeTextFile } from "../io/nodeFileIO.js";
 import { createNodeTransport } from "../runtime/node/transport.js";
 
@@ -23,8 +25,22 @@ interface CliArgs {
   contextWindow?: number;
   maxCharsPerLine?: number;
   maxLines?: number;
+  checkpointPath?: string;
+  resume?: boolean;
   verbose?: boolean;
   help?: boolean;
+}
+
+interface TranslationCheckpoint {
+  version: 1;
+  inputHash: string;
+  sourceLang: string;
+  targetLang: string;
+  model: string;
+  translatedByIndex: Record<string, string>;
+  completedBatches: number;
+  totalBatches: number;
+  updatedAt: string;
 }
 
 async function main(): Promise<void> {
@@ -42,12 +58,56 @@ async function main(): Promise<void> {
   const inputText =
     inputSource === "-" ? await readAllStdin() : readFileSync(inputSource, "utf8");
   const inputFileName = inputSource === "-" ? undefined : basename(inputSource);
+  const inputFormat = args.format ?? detectFormat({ text: inputText, fileName: inputFileName });
+  const outputFormat = args.format ?? inputFormat;
+  const out = args.output ?? suggestOutputPath({ inputSource, format: outputFormat });
+  const checkpointPath = args.checkpointPath ?? (out !== "-" ? `${out}.checkpoint.json` : undefined);
+
+  const inputDoc = parseSubtitle({ text: inputText, format: inputFormat });
+  const inputHash = sha256({ value: inputText });
+  const sourceLang = args.from ?? "en";
+  const targetLang = args.to ?? "vi";
+  const model = args.model ?? "qwen3.5:9b";
+  const shouldResume = args.resume ?? true;
+
+  const fromOutput = shouldResume
+    ? loadProgressFromOutput({
+        outputPath: out,
+        outputFormat,
+        inputDoc,
+        verbose: Boolean(args.verbose),
+      })
+    : {};
+
+  const checkpoint = shouldResume
+    ? loadCheckpoint({
+        checkpointPath,
+        inputHash,
+        sourceLang,
+        targetLang,
+        model,
+        verbose: Boolean(args.verbose),
+      })
+    : undefined;
+
+  const fromCheckpoint = checkpoint?.translatedByIndex
+    ? Object.fromEntries(
+        Object.entries(checkpoint.translatedByIndex)
+          .map(([key, value]) => [Number(key), value])
+          .filter(([key, value]) => Number.isFinite(key) && typeof value === "string"),
+      )
+    : {};
+
+  const initialTranslatedByIndex = {
+    ...fromOutput,
+    ...fromCheckpoint,
+  };
 
   const adapter = createOllamaAdapter({
     transport: createNodeTransport(),
     config: {
       provider: "ollama",
-      model: args.model ?? "qwen3.5:9b",
+      model,
       baseUrl: args.baseUrl ?? "http://127.0.0.1:11434",
       temperature: 0,
       timeoutMs: args.timeoutMs ?? 300000,
@@ -56,16 +116,13 @@ async function main(): Promise<void> {
     },
   });
 
-  const result = await translateSubtitleText({
-    inputText,
-    inputFileName,
-    inputFormat: args.format,
-    outputFormat: args.format,
+  const result = await translateSubtitles({
+    doc: inputDoc,
     llmAdapter: adapter,
     options: {
-      sourceLang: args.from ?? "en",
-      targetLang: args.to ?? "vi",
-      model: args.model ?? "qwen3.5:9b",
+      sourceLang,
+      targetLang,
+      model,
       temperature: 0,
       timeoutMs: args.timeoutMs ?? 300000,
       batchSize: args.batchSize ?? 2,
@@ -73,21 +130,57 @@ async function main(): Promise<void> {
       maxCharsPerLine: args.maxCharsPerLine ?? 42,
       maxLines: args.maxLines ?? 2,
       onProgress: args.verbose ? (message) => stderr.write(`[progress] ${message}\n`) : undefined,
+      initialTranslatedByIndex,
+      onBatchCommitted: async (state) => {
+        if (out !== "-") {
+          const progressDoc = buildProgressDoc({
+            sourceDoc: inputDoc,
+            translatedByIndex: state.translatedByIndex,
+            sourceLang,
+            targetLang,
+          });
+          const progressText = serializeSubtitle({ doc: progressDoc, format: outputFormat });
+          await writeTextFile({ path: out, content: progressText });
+        }
+
+        if (checkpointPath) {
+          const payload: TranslationCheckpoint = {
+            version: 1,
+            inputHash,
+            sourceLang,
+            targetLang,
+            model,
+            translatedByIndex: Object.fromEntries(
+              Object.entries(state.translatedByIndex).map(([key, value]) => [String(key), value]),
+            ),
+            completedBatches: state.completedBatches,
+            totalBatches: state.totalBatches,
+            updatedAt: new Date().toISOString(),
+          };
+          await writeTextFile({
+            path: checkpointPath,
+            content: `${JSON.stringify(payload, null, 2)}\n`,
+          });
+        }
+      },
     },
   });
 
-  const out = args.output ?? suggestOutputPath({ inputSource, format: result.outputFormat });
+  const finalOutputText = serializeSubtitle({ doc: result.doc, format: outputFormat });
 
   if (out === "-") {
-    output.write(result.outputText);
+    output.write(finalOutputText);
     for (const warning of result.warnings) {
       stderr.write(`[warn] ${warning}\n`);
     }
     return;
   }
 
-  await writeTextFile({ path: out, content: result.outputText });
+  await writeTextFile({ path: out, content: finalOutputText });
   stderr.write(`Wrote translated subtitles to ${out}\n`);
+  if (checkpointPath) {
+    stderr.write(`Checkpoint file: ${checkpointPath}\n`);
+  }
   for (const warning of result.warnings) {
     stderr.write(`[warn] ${warning}\n`);
   }
@@ -112,6 +205,12 @@ function parseArgs(params: { argv: string[] }): CliArgs {
     switch (token) {
       case "--verbose":
         args.verbose = true;
+        break;
+      case "--resume":
+        args.resume = true;
+        break;
+      case "--no-resume":
+        args.resume = false;
         break;
       case "--in":
         args.input = requireValue({ argv, index: i, token });
@@ -163,6 +262,10 @@ function parseArgs(params: { argv: string[] }): CliArgs {
         break;
       case "--max-lines":
         args.maxLines = parsePositiveInt({ value: requireValue({ argv, index: i, token }), token });
+        i += 1;
+        break;
+      case "--checkpoint-path":
+        args.checkpointPath = requireValue({ argv, index: i, token });
         i += 1;
         break;
       default:
@@ -245,6 +348,9 @@ Options:
   --context-window <n> Context items on each side (default: 1)
   --max-chars-per-line <n>  Line reflow character limit (default: 42)
   --max-lines <n>      Max lines per subtitle block (default: 2)
+  --checkpoint-path <path>  Optional sidecar checkpoint metadata file
+  --resume             Resume using output file/checkpoint when available (default: on)
+  --no-resume          Ignore output/checkpoint progress and start fresh
   --verbose            Print progress/debug logs to stderr
   --help               Show this help
 `);
@@ -267,4 +373,139 @@ function formatCliError(params: { error: unknown }): string {
     ].join("\n");
   }
   return `Error: ${asText}`;
+}
+
+function sha256(params: { value: string }): string {
+  return createHash("sha256").update(params.value).digest("hex");
+}
+
+function buildProgressDoc(params: {
+  sourceDoc: SubtitleDoc;
+  translatedByIndex: Record<number, string>;
+  sourceLang: string;
+  targetLang: string;
+}): SubtitleDoc {
+  return {
+    ...params.sourceDoc,
+    sourceLanguage: params.sourceLang,
+    targetLanguage: params.targetLang,
+    items: params.sourceDoc.items.map((item) => {
+      const translated = params.translatedByIndex[item.index];
+      if (!translated) return item;
+      return {
+        ...item,
+        text: translated,
+        lines: translated.split("\n"),
+      };
+    }),
+  };
+}
+
+function loadProgressFromOutput(params: {
+  outputPath: string;
+  outputFormat: SubtitleFormat;
+  inputDoc: SubtitleDoc;
+  verbose: boolean;
+}): Record<number, string> {
+  if (params.outputPath === "-") return {};
+  if (!existsSync(params.outputPath)) return {};
+
+  try {
+    const outputText = readFileSync(params.outputPath, "utf8");
+    const outputDoc = parseSubtitle({ text: outputText, format: params.outputFormat });
+
+    if (!sameStructure({ a: params.inputDoc, b: outputDoc })) {
+      if (params.verbose) {
+        stderr.write(`[debug] Ignoring output progress due to structure mismatch: ${params.outputPath}\n`);
+      }
+      return {};
+    }
+
+    const translatedByIndex: Record<number, string> = {};
+    for (let i = 0; i < params.inputDoc.items.length; i += 1) {
+      const src = params.inputDoc.items[i];
+      const out = outputDoc.items[i];
+      const srcText = src.text.trim();
+      const outText = out.text.trim();
+      if (!outText) continue;
+      if (!srcText) {
+        translatedByIndex[src.index] = out.text;
+        continue;
+      }
+
+      // Best-effort resume signal: output text differs from source text.
+      if (outText !== srcText) {
+        translatedByIndex[src.index] = out.text;
+      }
+    }
+
+    if (params.verbose) {
+      stderr.write(
+        `[debug] Loaded progress from output ${params.outputPath} (${Object.keys(translatedByIndex).length} translated cues)\n`,
+      );
+    }
+    return translatedByIndex;
+  } catch (error) {
+    if (params.verbose) {
+      stderr.write(`[debug] Failed to read output progress ${params.outputPath}: ${String(error)}\n`);
+    }
+    return {};
+  }
+}
+
+function sameStructure(params: { a: SubtitleDoc; b: SubtitleDoc }): boolean {
+  if (params.a.items.length !== params.b.items.length) return false;
+  for (let i = 0; i < params.a.items.length; i += 1) {
+    const left = params.a.items[i];
+    const right = params.b.items[i];
+    if (
+      left.index !== right.index ||
+      left.startMs !== right.startMs ||
+      left.endMs !== right.endMs
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function loadCheckpoint(params: {
+  checkpointPath?: string;
+  inputHash: string;
+  sourceLang: string;
+  targetLang: string;
+  model: string;
+  verbose: boolean;
+}): TranslationCheckpoint | undefined {
+  if (!params.checkpointPath) return undefined;
+  if (!existsSync(params.checkpointPath)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(params.checkpointPath, "utf8")) as TranslationCheckpoint;
+    if (
+      parsed?.inputHash !== params.inputHash ||
+      parsed?.sourceLang !== params.sourceLang ||
+      parsed?.targetLang !== params.targetLang ||
+      parsed?.model !== params.model
+    ) {
+      if (params.verbose) {
+        stderr.write(
+          `[debug] Ignoring checkpoint due to mismatch: ${params.checkpointPath}\n`,
+        );
+      }
+      return undefined;
+    }
+    if (params.verbose) {
+      stderr.write(
+        `[debug] Loaded checkpoint ${params.checkpointPath} (${Object.keys(parsed.translatedByIndex ?? {}).length} translated cues)\n`,
+      );
+    }
+    return parsed;
+  } catch (error) {
+    if (params.verbose) {
+      stderr.write(
+        `[debug] Failed to read checkpoint ${params.checkpointPath}: ${String(error)}\n`,
+      );
+    }
+    return undefined;
+  }
 }

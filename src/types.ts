@@ -53,6 +53,12 @@ export interface TranslateOptions {
   timeoutMs?: number;
   onWarning?: (warning: string) => void;
   onProgress?: (message: string) => void;
+  initialTranslatedByIndex?: Record<number, string>;
+  onBatchCommitted?: (params: {
+    translatedByIndex: Record<number, string>;
+    completedBatches: number;
+    totalBatches: number;
+  }) => void | Promise<void>;
 }
 
 export interface HttpRequestParams {

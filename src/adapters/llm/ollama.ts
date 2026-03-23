@@ -10,6 +10,7 @@ export function createOllamaAdapter(params: CreateOllamaAdapterParams) {
     provider: "ollama" as const,
     model: "qwen3.5:9b",
     baseUrl: "http://127.0.0.1:11434",
+    think: false,
     temperature: 0,
     timeoutMs: 120000,
     maxRetries: 2,
@@ -19,6 +20,7 @@ export function createOllamaAdapter(params: CreateOllamaAdapterParams) {
   return {
     async translateBatch(batchParams: TranslateBatchParams): Promise<TranslateBatchResult> {
       const model = batchParams.model ?? config.model;
+      const think = batchParams.think ?? config.think;
       const timeoutMs = batchParams.timeoutMs ?? config.timeoutMs;
       const temperature = batchParams.temperature ?? config.temperature;
 
@@ -29,7 +31,7 @@ export function createOllamaAdapter(params: CreateOllamaAdapterParams) {
         attemptsUsed = attempt + 1;
         try {
           config.onDebug?.(
-            `Ollama request attempt ${attempt + 1}/${config.maxRetries + 1} model=${model} timeoutMs=${timeoutMs} items=${batchParams.items.length}`,
+            `Ollama request attempt ${attempt + 1}/${config.maxRetries + 1} model=${model} think=${String(think)} timeoutMs=${timeoutMs} items=${batchParams.items.length}`,
           );
           const response = await params.transport.request({
             method: "POST",
@@ -40,6 +42,7 @@ export function createOllamaAdapter(params: CreateOllamaAdapterParams) {
             timeoutMs,
             body: JSON.stringify({
               model,
+              think,
               stream: false,
               format: "json",
               options: {
@@ -88,7 +91,7 @@ export function createOllamaAdapter(params: CreateOllamaAdapterParams) {
       }
 
       throw new Error(
-        `Ollama translation failed after ${attemptsUsed} attempt(s) (model=${model}, timeoutMs=${timeoutMs}, items=${batchParams.items.length}): ${errorToString({ error: lastError })}${lastModelSnippet ? ` | last snippet: ${lastModelSnippet}` : ""}`,
+        `Ollama translation failed after ${attemptsUsed} attempt(s) (model=${model}, think=${String(think)}, timeoutMs=${timeoutMs}, items=${batchParams.items.length}): ${errorToString({ error: lastError })}${lastModelSnippet ? ` | last snippet: ${lastModelSnippet}` : ""}`,
       );
     },
   };

@@ -72,6 +72,7 @@ export async function translateSubtitles(params: TranslateSubtitlesParams): Prom
       sourceLang: options.sourceLang,
       targetLang: options.targetLang,
       model: options.model,
+      think: options.think,
       temperature: options.temperature,
       timeoutMs: options.timeoutMs,
       onProgress: options.onProgress,
@@ -119,6 +120,7 @@ interface ResilientBatchParams {
   sourceLang: string;
   targetLang: string;
   model?: string;
+  think?: boolean;
   temperature?: number;
   timeoutMs?: number;
   onProgress?: (message: string) => void;
@@ -135,6 +137,7 @@ async function translateBatchResilient(params: ResilientBatchParams): Promise<{
       targetLang: params.targetLang,
       items: params.batch,
       model: params.model,
+      think: params.think,
       temperature: params.temperature,
       timeoutMs: params.timeoutMs,
     });

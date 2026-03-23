@@ -27,6 +27,7 @@ export interface TranslateBatchParams {
   targetLang: string;
   items: TranslateBatchItem[];
   model?: string;
+  think?: boolean;
   temperature?: number;
   timeoutMs?: number;
 }
@@ -49,6 +50,7 @@ export interface TranslateOptions {
   preserveLineBreaks?: boolean;
   contextWindow?: number;
   model?: string;
+  think?: boolean;
   temperature?: number;
   timeoutMs?: number;
   onWarning?: (warning: string) => void;
@@ -82,6 +84,7 @@ export interface LlmProviderConfig {
   provider?: "ollama";
   model?: string;
   baseUrl?: string;
+  think?: boolean;
   temperature?: number;
   timeoutMs?: number;
   maxRetries?: number;

@@ -17,6 +17,7 @@ interface CliArgs {
   from?: string;
   to?: string;
   model?: string;
+  think?: boolean;
   format?: SubtitleFormat;
   baseUrl?: string;
   batchSize?: number;
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
   const sourceLang = args.from ?? "en";
   const targetLang = args.to ?? "vi";
   const model = args.model ?? "qwen3.5:9b";
+  const think = args.think ?? false;
   const shouldResume = args.resume ?? true;
 
   const fromOutput = shouldResume
@@ -108,6 +110,7 @@ async function main(): Promise<void> {
     config: {
       provider: "ollama",
       model,
+      think,
       baseUrl: args.baseUrl ?? "http://127.0.0.1:11434",
       temperature: 0,
       timeoutMs: args.timeoutMs ?? 300000,
@@ -123,6 +126,7 @@ async function main(): Promise<void> {
       sourceLang,
       targetLang,
       model,
+      think,
       temperature: 0,
       timeoutMs: args.timeoutMs ?? 300000,
       batchSize: args.batchSize ?? 2,
@@ -232,6 +236,12 @@ function parseArgs(params: { argv: string[] }): CliArgs {
         args.model = requireValue({ argv, index: i, token });
         i += 1;
         break;
+      case "--think":
+        args.think = true;
+        break;
+      case "--no-think":
+        args.think = false;
+        break;
       case "--format":
         args.format = parseFormat({ value: requireValue({ argv, index: i, token }) });
         i += 1;
@@ -340,6 +350,8 @@ Options:
   --from <lang>        Source language (default: en)
   --to <lang>          Target language (default: vi)
   --model <modelId>    Ollama model (default: qwen3.5:9b)
+  --think              Enable model reasoning when supported
+  --no-think           Disable model reasoning (default)
   --format <srt|vtt|json>  Explicit input/output format
   --base-url <url>     Ollama base URL (default: http://127.0.0.1:11434)
   --batch-size <n>     Batch size per LLM call (default: 2)

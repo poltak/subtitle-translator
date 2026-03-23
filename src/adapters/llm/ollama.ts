@@ -74,6 +74,23 @@ export function createOllamaAdapter(params: CreateOllamaAdapterParams) {
           try {
             return parseOllamaTranslationJson({ modelText });
           } catch (parseError) {
+            try {
+              const corrected = await requestJsonCorrection({
+                transport: params.transport,
+                baseUrl: config.baseUrl,
+                model,
+                think,
+                temperature,
+                timeoutMs,
+                invalidText: modelText,
+              });
+              config.onDebug?.("Ollama correction pass recovered invalid JSON payload");
+              return parseOllamaTranslationJson({ modelText: corrected });
+            } catch (correctionError) {
+              config.onDebug?.(
+                `Ollama correction pass failed: ${errorToString({ error: correctionError })}`,
+              );
+            }
             lastModelSnippet = buildSnippet({ text: modelText });
             throw new NonRetryableModelOutputError(
               `Failed to parse Ollama translation payload: ${errorToString({ error: parseError })}. Snippet: ${lastModelSnippet}`,
@@ -146,13 +163,17 @@ function extractJsonCandidate(params: { text: string }): string {
     return trimmed;
   }
 
-  const firstBrace = trimmed.indexOf("{");
-  const lastBrace = trimmed.lastIndexOf("}");
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return trimmed.slice(firstBrace, lastBrace + 1);
+  const balanced = extractBalancedJsonObject({ text: trimmed });
+  if (balanced) {
+    return balanced;
   }
 
-  throw new Error("Model output did not contain JSON object");
+  const repaired = repairJsonObject({ text: trimmed });
+  if (repaired) {
+    return repaired;
+  }
+
+  throw new Error("Model output did not contain reparable JSON object");
 }
 
 function errorToString(params: { error: unknown }): string {
@@ -214,4 +235,142 @@ function collectTranslatedById(params: { parsed: unknown }): Record<string, stri
   }
 
   return output;
+}
+
+async function requestJsonCorrection(params: {
+  transport: HttpTransport;
+  baseUrl: string;
+  model: string;
+  think: boolean;
+  temperature: number;
+  timeoutMs: number;
+  invalidText: string;
+}): Promise<string> {
+  const response = await params.transport.request({
+    method: "POST",
+    url: `${params.baseUrl}/api/chat`,
+    headers: {
+      "content-type": "application/json",
+    },
+    timeoutMs: params.timeoutMs,
+    body: JSON.stringify({
+      model: params.model,
+      think: params.think,
+      stream: false,
+      format: "json",
+      options: {
+        temperature: 0,
+      },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You repair malformed JSON. Return only valid JSON matching the intended structure. Do not translate or change text content.",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "repair_translation_json",
+            requiredShape: {
+              translations: [{ id: "string", text: "string" }],
+            },
+            invalidJson: params.invalidText,
+          }),
+        },
+      ],
+    }),
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Ollama correction request failed with status ${response.status}: ${response.bodyText}`);
+  }
+
+  const parsedResponse = JSON.parse(response.bodyText) as {
+    message?: { content?: string };
+    response?: string;
+  };
+  return parsedResponse.message?.content ?? parsedResponse.response ?? "";
+}
+
+function extractBalancedJsonObject(params: { text: string }): string | undefined {
+  const start = params.text.indexOf("{");
+  if (start < 0) return undefined;
+
+  let depthCurly = 0;
+  let depthSquare = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < params.text.length; i += 1) {
+    const char = params.text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") depthCurly += 1;
+    if (char === "}") depthCurly -= 1;
+    if (char === "[") depthSquare += 1;
+    if (char === "]") depthSquare -= 1;
+
+    if (depthCurly === 0 && depthSquare === 0) {
+      return params.text.slice(start, i + 1);
+    }
+  }
+
+  return undefined;
+}
+
+function repairJsonObject(params: { text: string }): string | undefined {
+  const start = params.text.indexOf("{");
+  if (start < 0) return undefined;
+
+  const candidate = params.text.slice(start).trim();
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < candidate.length; i += 1) {
+    const char = candidate[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") stack.push("}");
+    if (char === "[") stack.push("]");
+    if ((char === "}" || char === "]") && stack[stack.length - 1] === char) {
+      stack.pop();
+    }
+  }
+
+  const repaired = `${candidate}${stack.reverse().join("")}`;
+  try {
+    JSON.parse(repaired);
+    return repaired;
+  } catch {
+    return undefined;
+  }
 }

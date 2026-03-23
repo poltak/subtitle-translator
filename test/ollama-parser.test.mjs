@@ -53,3 +53,22 @@ test('parses subtitles array shape', () => {
   assert.equal(parsed.translatedById['1'], 'Xin chao');
   assert.equal(parsed.translatedById['2'], 'Tam biet');
 });
+
+test('repairs missing outer object brace', () => {
+  const parsed = parseOllamaTranslationJson({
+    modelText:
+      '{"translations":[{"id":"267","text":"A"},{"id":"268","text":"B"}]',
+  });
+
+  assert.equal(parsed.translatedById['267'], 'A');
+  assert.equal(parsed.translatedById['268'], 'B');
+});
+
+test('extracts balanced object before trailing junk', () => {
+  const parsed = parseOllamaTranslationJson({
+    modelText:
+      '{"translations":[{"id":"1","text":"Xin chao"}]} trailing text that should be ignored',
+  });
+
+  assert.equal(parsed.translatedById['1'], 'Xin chao');
+});

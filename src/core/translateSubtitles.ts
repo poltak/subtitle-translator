@@ -72,6 +72,7 @@ export async function translateSubtitles(params: TranslateSubtitlesParams): Prom
       sourceLang: options.sourceLang,
       targetLang: options.targetLang,
       model: options.model,
+      promptMode: options.promptMode,
       think: options.think,
       temperature: options.temperature,
       timeoutMs: options.timeoutMs,
@@ -120,6 +121,7 @@ interface ResilientBatchParams {
   sourceLang: string;
   targetLang: string;
   model?: string;
+  promptMode?: "default" | "fast";
   think?: boolean;
   temperature?: number;
   timeoutMs?: number;

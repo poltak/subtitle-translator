@@ -122,17 +122,27 @@ class NonRetryableModelOutputError extends Error {
 }
 
 function buildUserPrompt(params: { batchParams: TranslateBatchParams }): string {
+  const fastMode = params.batchParams.promptMode === "fast";
   const payload = {
     task: "translate_subtitle_batch",
     sourceLang: params.batchParams.sourceLang,
     targetLang: params.batchParams.targetLang,
-    rules: [
-      "Translate each item text only.",
-      "Do not merge or split items.",
-      "Keep item id exactly.",
-      "Output JSON object with key translations.",
-      "translations must be an array of {id, text}.",
-    ],
+    mode: fastMode ? "fast" : "default",
+    rules: fastMode
+      ? [
+          "Translate directly with minimal reasoning.",
+          "Translate only the current subtitle text.",
+          "Do not explain, analyze, or preserve source text.",
+          "Keep item id exactly.",
+          "Return only {\"translations\":[{\"id\":\"...\",\"text\":\"...\"}]}",
+        ]
+      : [
+          "Translate each item text only.",
+          "Do not merge or split items.",
+          "Keep item id exactly.",
+          "Output JSON object with key translations.",
+          "translations must be an array of {id, text}.",
+        ],
     items: params.batchParams.items,
     outputSchema: {
       translations: [{ id: "string", text: "string" }],

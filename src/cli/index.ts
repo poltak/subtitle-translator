@@ -18,6 +18,7 @@ interface CliArgs {
   to?: string;
   model?: string;
   think?: boolean;
+  fast?: boolean;
   format?: SubtitleFormat;
   baseUrl?: string;
   batchSize?: number;
@@ -70,6 +71,7 @@ async function main(): Promise<void> {
   const targetLang = args.to ?? "vi";
   const model = args.model ?? "qwen3.5:9b";
   const think = args.think ?? false;
+  const fast = args.fast ?? false;
   const shouldResume = args.resume ?? true;
 
   const fromOutput = shouldResume
@@ -126,11 +128,12 @@ async function main(): Promise<void> {
       sourceLang,
       targetLang,
       model,
+      promptMode: fast ? "fast" : "default",
       think,
       temperature: 0,
       timeoutMs: args.timeoutMs ?? 300000,
-      batchSize: args.batchSize ?? 2,
-      contextWindow: args.contextWindow ?? 1,
+      batchSize: args.batchSize ?? (fast ? 1 : 2),
+      contextWindow: args.contextWindow ?? (fast ? 2 : 1),
       maxCharsPerLine: args.maxCharsPerLine ?? 42,
       maxLines: args.maxLines ?? 2,
       onProgress: args.verbose ? (message) => stderr.write(`[progress] ${message}\n`) : undefined,
@@ -215,6 +218,9 @@ function parseArgs(params: { argv: string[] }): CliArgs {
         break;
       case "--no-resume":
         args.resume = false;
+        break;
+      case "--fast":
+        args.fast = true;
         break;
       case "--in":
         args.input = requireValue({ argv, index: i, token });
@@ -352,6 +358,7 @@ Options:
   --model <modelId>    Ollama model (default: qwen3.5:9b)
   --think              Enable model reasoning when supported
   --no-think           Disable model reasoning (default)
+  --fast               Use single-cue batches, context window 2, and stricter prompt
   --format <srt|vtt|json>  Explicit input/output format
   --base-url <url>     Ollama base URL (default: http://127.0.0.1:11434)
   --batch-size <n>     Batch size per LLM call (default: 2)

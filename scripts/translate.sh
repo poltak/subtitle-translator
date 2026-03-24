@@ -12,6 +12,7 @@ shift
 
 MODEL="${MODEL:-qwen3.5:9b}"
 THINK="${THINK:-false}"
+FAST="${FAST:-false}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
 TIMEOUT_MS="${TIMEOUT_MS:-300000}"
@@ -28,6 +29,9 @@ if [[ "$THINK" == "true" ]]; then
   EXTRA_FLAGS+=("--think")
 else
   EXTRA_FLAGS+=("--no-think")
+fi
+if [[ "$FAST" == "true" ]]; then
+  EXTRA_FLAGS+=("--fast")
 fi
 
 node dist/cli/index.js "$INPUT_PATH" \

@@ -27,6 +27,7 @@ export interface TranslateBatchParams {
   targetLang: string;
   items: TranslateBatchItem[];
   model?: string;
+  promptMode?: "default" | "fast";
   think?: boolean;
   temperature?: number;
   timeoutMs?: number;
@@ -50,6 +51,7 @@ export interface TranslateOptions {
   preserveLineBreaks?: boolean;
   contextWindow?: number;
   model?: string;
+  promptMode?: "default" | "fast";
   think?: boolean;
   temperature?: number;
   timeoutMs?: number;
